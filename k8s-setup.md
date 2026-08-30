@@ -267,22 +267,10 @@ kubeadm join 10.10.8.215:6443 \
   --discovery-token-ca-cert-hash sha256:<HASH>
 ```
 ⚠️ Save this command!
+
 If you lose the command, generate a new one:
 ```
 kubeadm token create --print-join-command
-```
-Now SSH into each of the nodes :   
-
-Now we can run:  
-```
-sudo apt install qemu-guest-agent -y
-```
-## Each command should now run for all VMs
-
-Now we have to disable swap file as otherwise our kubelet service might behave unpredictibly 
-```
-sudo swapoff -a
-sudo vi /etc/fstab
 ```
 ## 10. 👤 Configure kubectl
 After `kubeadm` init completes, configure `kubectl` for your normal user.
@@ -297,7 +285,7 @@ sudo cp -i /etc/kubernetes/admin.conf \
 sudo chown $(id -u):$(id -g) \
   $HOME/.kube/config
 ````
-## 11. 🕸 Install Flannel
+## 11. 🕸 Install Flannel(Master)
 Kubernetes requires a CNI (Container Network Interface) to provide Pod networking.
 
 This guide uses Flannel.
@@ -326,7 +314,7 @@ Return to `k8s-master`.
 kubectl get nodes
 ```
 
-## 14. ⚖️ Install MetalLB
+## 14. ⚖️ Install MetalLB(Master)
 A standard bare-metal Kubernetes cluster does not automatically provide a cloud-provider-style LoadBalancer implementation.
 
 For this lab, we can use `MetalLB`.
@@ -345,7 +333,7 @@ Install MetalLB using its official manifest.
 ```
 kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.14.9/config/manifests/metallb-native.yaml
 ```
-## 15. 🌐 Configure the MetalLB IP Pool
+## 15. 🌐 Configure the MetalLB IP Pool(Master)
 MetalLB needs a range of IP addresses that it can assign to Kubernetes `LoadBalancer` services.
 ```
 vi proxmox-ip-pool.yaml
