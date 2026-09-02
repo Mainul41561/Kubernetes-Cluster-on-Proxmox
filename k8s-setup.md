@@ -461,4 +461,660 @@ http://10.10.8.240
 ### cluster details output
 ![cluster](https://github.com/Mainul41561/Kubernetes-Cluster-on-Proxmox/blob/main/Screenshot%202026-08-20%20173554.png)
 
+# Adding Rancher Management Server with K3s
+
+A practical guide for deploying **Rancher Server on a dedicated K3s management cluster** and registering an existing Kubernetes cluster for centralized management.
+
+This setup uses **Proxmox VE**, **Ubuntu Server 24.04**, **K3s**, **Helm**, **cert-manager**, and **Rancher**.
+
+The existing Kubernetes workload cluster is built separately using `kubeadm`, `containerd`, Flannel, and MetalLB.
+
+---
+
+## 🏗️ Architecture
+
+```text
+                              Proxmox VE
+                                  │
+                  ┌───────────────┴────────────────┐
+                  │                                │
+                  │                                │
+          Rancher Management                  Existing K8s
+               Cluster                         Workload Cluster
+                  │                                │
+          ┌───────▼────────┐              ┌────────┴─────────┐
+          │  Rancher VM    │              │                  │
+          │ 10.10.8.218    │              │                  │
+          │                │              │                  │
+          │ Ubuntu 24.04   │              │                  │
+          │ K3s            │              │                  │
+          │                │              │                  │
+          │ Rancher 2.15.1│              │                  │
+          └───────┬────────┘              │                  │
+                  │                       │                  │
+                  │ HTTPS                 │                  │
+                  │                       │                  │
+                  │              ┌────────▼────────┐         │
+                  │              │ k8s-master      │         │
+                  │              │ 10.10.8.215     │         │
+                  │              │ Control Plane    │         │
+                  │              └─────────────────┘         │
+                  │                                          │
+                  │              ┌─────────────────┐         │
+                  │              │ k8s-worker1     │         │
+                  │              │ 10.10.8.216     │         │
+                  │              └─────────────────┘         │
+                  │                                          │
+                  │              ┌─────────────────┐         │
+                  │              │ k8s-worker2     │         │
+                  │              │ 10.10.8.217     │         │
+                  │              └─────────────────┘         │
+                  │                                          │
+                  │                         Flannel          │
+                  │                            │             │
+                  │                         MetalLB           │
+                  │                            │             │
+                  │                    10.10.8.240-245        │
+                  │                                          │
+                  └──────────── Rancher manages ─────────────┘
+```
+
+---
+
+# 📋 Environment
+
+## Rancher Management VM
+
+| Component         | Configuration             |
+| ----------------- | ------------------------- |
+| Hostname          | `rancher`                 |
+| IP Address        | `10.10.8.218`             |
+| OS                | Ubuntu Server 24.04.4 LTS |
+| Kubernetes        | K3s `v1.36.4+k3s1`        |
+| Container Runtime | containerd                |
+| Helm              | `v3.21.4`                 |
+| Rancher           | `v2.15.1`                 |
+
+## Existing Kubernetes Cluster
+```
+| Node          | IP Address    | Role          |
+| ------------- | ------------- | ------------- |
+| `k8s-master`  | `10.10.8.215` | Control Plane |
+| `k8s-worker1` | `10.10.8.216` | Worker        |
+| `k8s-worker2` | `10.10.8.217` | Worker        |
+```
+---
+
+# 🎯 Objectives
+
+This project separates the Rancher management plane from the workload cluster.
+
+The final setup provides:
+
+* Dedicated Rancher VM
+* K3s Kubernetes management cluster
+* Rancher Server
+* HTTPS access to Rancher
+* cert-manager for TLS
+* Existing Kubernetes cluster registered in Rancher
+* Centralized Kubernetes management through Rancher UI
+
+---
+
+# 1. Prerequisites
+
+Before starting, make sure you have:
+
+* Proxmox VE
+* Ubuntu Server 24.04
+* Static IP addresses
+* SSH access
+* Internet access
+* Working Kubernetes workload cluster
+* Network connectivity between Rancher and Kubernetes nodes
+
+Required network:
+
+```text
+10.10.8.0/24
+```
+
+Rancher VM:
+
+```text
+10.10.8.218
+```
+
+Existing Kubernetes API server:
+
+```text
+10.10.8.215:6443
+```
+
+---
+
+# 2. Create Rancher VM
+
+Recommended lab configuration:
+
+```text
+Hostname: rancher
+IP:       10.10.8.218
+CPU:      2-4 cores
+RAM:      4-8 GB
+Disk:     40-50 GB
+OS:       Ubuntu Server 24.04
+```
+
+Install OpenSSH Server during Ubuntu installation.
+
+---
+
+# 3. Update Ubuntu
+
+SSH into the Rancher VM:
+
+```bash
+ssh your-user@10.10.8.218
+```
+
+Update the operating system:
+
+```bash
+sudo apt update && sudo apt upgrade -y
+```
+
+Reboot:
+
+```bash
+sudo reboot
+```
+
+---
+
+# 4. Configure Hostname
+
+Set the hostname:
+
+```bash
+sudo hostnamectl set-hostname rancher
+```
+
+Verify:
+
+```bash
+hostname
+```
+
+Expected:
+
+```text
+rancher
+```
+
+---
+
+# 5. Install K3s
+
+K3s will be used as the Kubernetes management cluster for Rancher.
+
+Install K3s:
+
+```bash
+curl -sfL https://get.k3s.io | sh -
+```
+
+Check K3s:
+
+```bash
+sudo systemctl status k3s
+```
+
+Check the node:
+
+```bash
+sudo kubectl get nodes
+```
+
+Expected:
+
+```text
+NAME      STATUS   ROLES           AGE   VERSION
+rancher   Ready    control-plane   ...   v1.36.4+k3s1
+```
+
+---
+
+# 6. Configure kubectl
+
+Copy the K3s kubeconfig:
+
+```bash
+mkdir -p ~/.kube
+sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
+sudo chown -R $USER:$USER ~/.kube
+chmod 600 ~/.kube/config
+```
+
+Verify:
+
+```bash
+kubectl get nodes
+```
+
+Expected:
+
+```text
+NAME      STATUS   ROLES           AGE   VERSION
+rancher   Ready    control-plane   ...   v1.36.4+k3s1
+```
+
+If K3s config permissions cause problems, explicitly use:
+
+```bash
+kubectl --kubeconfig=/home/mainul/.kube/config get nodes
+```
+
+---
+
+# 7. Verify K3s Components
+
+Check all namespaces:
+
+```bash
+kubectl get pods -A
+```
+All required pods should eventually reach:
+
+```text
+Running
+```
+
+---
+
+# 8. Install Helm
+
+Install Helm:
+
+```bash
+curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+```
+
+Verify:
+
+```bash
+helm version
+```
+---
+
+# 9. Add Rancher Helm Repository
+
+Add the Rancher stable repository:
+
+```bash
+helm repo add rancher-stable \
+  https://releases.rancher.com/server-charts/stable
+```
+
+Update repositories:
+
+```bash
+helm repo update
+```
+
+Check available Rancher releases:
+
+```bash
+helm search repo rancher-stable/rancher
+```
+---
+
+# 10. Install cert-manager
+
+Rancher requires TLS.
+
+Add Jetstack:
+
+```bash
+helm repo add jetstack https://charts.jetstack.io
+```
+
+Update Helm repositories:
+
+```bash
+helm repo update
+```
+
+Install cert-manager:
+
+```bash
+helm install cert-manager jetstack/cert-manager \
+  --namespace cert-manager \
+  --create-namespace \
+  --set crds.enabled=true
+```
+
+---
+
+# 11. Verify cert-manager
+
+Check cert-manager pods:
+
+```bash
+kubectl get pods -n cert-manager
+```
+Check CRDs:
+
+```bash
+kubectl get crd | grep cert-manager
+```
+---
+
+# 12. Create Rancher Namespace
+
+Create the Rancher namespace:
+
+```bash
+kubectl create namespace cattle-system
+```
+
+Verify:
+
+```bash
+kubectl get namespace cattle-system
+```
+---
+
+# 13. Configure Rancher Hostname
+
+For this lab, the Rancher server can use an `sslip.io` hostname.
+
+Rancher VM:
+
+```text
+10.10.8.218
+```
+
+Hostname:
+
+```text
+10.10.8.218.sslip.io
+```
+
+Rancher URL:
+
+```text
+https://10.10.8.218.sslip.io
+```
+
+For a production environment, use a proper DNS hostname.
+
+---
+
+# 14. Install Rancher
+
+Install Rancher:
+
+```bash
+helm install rancher rancher-stable/rancher \
+  --namespace cattle-system \
+  --version 2.15.1 \
+  --set hostname=10.10.8.218.sslip.io \
+  --set replicas=1
+```
+
+Because this lab uses a single-node K3s management cluster, one Rancher replica is used.
+
+---
+
+# 15. Monitor Rancher
+
+Check Rancher pods:
+
+```bash
+kubectl get pods -n cattle-system
+```
+
+Watch the pods:
+
+```bash
+kubectl get pods -n cattle-system -w
+```
+
+Wait until Rancher becomes:
+
+```text
+1/1 Running
+```
+
+Stop watching with:
+
+```text
+Ctrl+C
+```
+
+---
+
+# 16. Check Rancher Deployment
+
+Run:
+
+```bash
+kubectl -n cattle-system rollout status deployment/rancher
+```
+
+Check deployments:
+
+```bash
+kubectl get deployment -n cattle-system
+```
+
+---
+
+# 17. Check Rancher Service
+
+Run:
+
+```bash
+kubectl get svc -n cattle-system
+```
+
+Check ingress:
+
+```bash
+kubectl get ingress -n cattle-system
+```
+
+The Rancher ingress should contain:
+
+```text
+10.10.8.218.sslip.io
+```
+
+---
+
+# 18. Get Rancher Bootstrap Password
+
+Retrieve the initial admin password:
+
+```bash
+kubectl get secret \
+  --namespace cattle-system bootstrap-secret \
+  -o go-template='{{.data.bootstrapPassword|base64decode}}{{"\n"}}'
+```
+
+Save this password securely.
+---
+
+# 19. Access Rancher UI
+
+Open a browser and navigate to:
+
+```text
+https://10.10.8.218.sslip.io
+```
+
+Login with:
+
+```text
+Username: admin
+Password: <bootstrap-password>
+```
+
+Rancher will ask you to configure the administrator password.
+
+---
+
+# 20. Verify Rancher
+
+Check Rancher pods:
+
+```bash
+kubectl get pods -n cattle-system
+```
+
+Check all Rancher resources:
+
+```bash
+kubectl get all -n cattle-system
+```
+
+Check certificates:
+
+```bash
+kubectl get certificates -A
+```
+
+---
+
+# 21. Register Existing Kubernetes Cluster
+
+Rancher can register this existing cluster instead of creating a new cluster.
+
+---
+
+# 22. Verify Existing Kubernetes Cluster
+
+SSH into the existing Kubernetes master:
+
+```bash
+ssh your-user@10.10.8.215
+```
+
+Verify:
+
+```bash
+kubectl get nodes -o wide
+```
+
+Verify the Kubernetes API server:
+
+```bash
+kubectl cluster-info
+```
+---
+
+# 23. Register Cluster from Rancher UI
+
+Open:
+
+```text
+https://10.10.8.218.sslip.io
+```
+
+Go to:
+
+```text
+Cluster Management
+```
+
+Select:
+
+```text
+Import Existing
+```
+
+Select the generic Kubernetes registration option.
+
+Rancher will generate a registration command.
+
+It will look similar to:
+
+```bash
+curl --insecure -sfL \
+  https://10.10.8.218.sslip.io/v3/import/... \
+  | kubectl apply -f -
+```
+
+> **Important:** Do not copy the example above.
+
+> Always copy the exact registration command generated by your Rancher UI because it contains a unique registration token.
+
+---
+
+# 24. Execute the Registration Command
+
+SSH into the existing Kubernetes master:
+
+```bash
+ssh your-user@10.10.8.215
+```
+
+Paste the registration command generated by Rancher.
+
+Rancher will create the required management/agent resources in the existing Kubernetes cluster.
+
+---
+
+# 25. Monitor Registration
+
+On the Kubernetes master:
+
+```bash
+kubectl get pods -A
+```
+
+Watch for Rancher-related resources:
+
+```bash
+kubectl get pods -A -w
+```
+
+Check namespaces:
+
+```bash
+kubectl get namespaces
+```
+
+---
+
+# 26. Verify Cluster in Rancher
+
+Return to:
+
+```text
+Rancher UI
+→ Cluster Management
+```
+
+Your existing Kubernetes cluster should appear.
+
+Wait until its state becomes:
+
+```text
+Active
+```
+
+Rancher can now manage the existing Kubernetes cluster.
+
+---
+### Rancher Dashboard
+
+![Rancher UI](https://github.com/Mainul41561/Kubernetes-Cluster-on-Proxmox/blob/main/Screenshot%202026-08-30%20154807.png)
+
+![K8s cluster](https://github.com/Mainul41561/Kubernetes-Cluster-on-Proxmox/blob/main/Screenshot%202026-08-30%20154848.png)
+--
+### Rancher Resources on K3s
+![Rancher UI](https://github.com/Mainul41561/Kubernetes-Cluster-on-Proxmox/blob/main/Screenshot%202026-08-30%20161612.png)
+
 
